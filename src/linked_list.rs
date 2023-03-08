@@ -1,4 +1,4 @@
-use std::{ptr::NonNull, fmt::Debug, iter::FusedIterator, marker::PhantomData};
+use std::{fmt::Debug, hash::Hash, iter::FusedIterator, marker::PhantomData, ptr::NonNull};
 
 struct NodePtr<T> {
 	ptr: Option<NonNull<Node<T>>>,
@@ -24,23 +24,19 @@ impl<T> NodePtr<T> {
 		})
 	}
 
-	fn as_ref<'a>(self) -> Option<&'a Node<T>> {
+	fn as_ref<'a>(&self) -> Option<&'a Node<T>> {
 		self.ptr.map(|valid_ptr| unsafe {
 			valid_ptr.as_ref()
 		})
 	}
 
-	fn as_mut<'a>(self) -> Option<&'a mut Node<T>> {
-		self.ptr.map(|mut valid_ptr| unsafe {
+	fn as_mut<'a>(&mut self) -> Option<&'a mut Node<T>> {
+		self.ptr.as_mut().map(|valid_ptr| unsafe {
 			valid_ptr.as_mut()
 		})
 	}
 
-	fn as_ref_unchecked<'a>(self) -> &'a Node<T> {
-		unsafe { self.ptr.unwrap_unchecked().as_ref() }
-	}
-
-	fn as_mut_unchecked<'a>(self) -> &'a mut Node<T> {
+	fn as_mut_unchecked<'a>(&self) -> &'a mut Node<T> {
 		unsafe { self.ptr.unwrap_unchecked().as_mut() }
 	}
 }
@@ -69,14 +65,14 @@ pub struct Iter<'a, T> {
 	head: NodePtr<T>,
 	tail: NodePtr<T>,
 	left: usize,
-	phantom: PhantomData<&'a T>
+	phantom: PhantomData<&'a T>,
 }
 
 pub struct IterMut<'a, T> {
 	head: NodePtr<T>,
 	tail: NodePtr<T>,
 	left: usize,
-	phantom: PhantomData<&'a mut T>
+	phantom: PhantomData<&'a mut T>,
 }
 
 pub struct IntoIter<T> {
@@ -105,10 +101,11 @@ impl<T> LinkedList<T> {
 			std::mem::swap(self, other);
 			return;
 		}
-		self.len += other.len();
-		let old_tail = self.tail.as_mut_unchecked();
-		old_tail.next = other.head;
-		other.head.as_mut_unchecked().prev = std::mem::replace(&mut self.tail, other.tail);
+		self.len += std::mem::replace(&mut other.len, 0);
+		let other_head = std::mem::replace(&mut other.head, Default::default());
+		self.tail.as_mut_unchecked().next = other_head;
+		other_head.as_mut_unchecked().prev = self.tail;
+		self.tail = std::mem::replace(&mut other.tail, Default::default());
 	}
 
 	pub fn iter(&self) -> Iter<T> {
@@ -166,7 +163,7 @@ impl<T> LinkedList<T> {
 
 	pub fn push_front(&mut self, elt: T) {
 		let new_head = NodePtr::new(elt, &Default::default(), &self.head);
-		let old_head = std::mem::replace(&mut self.head, new_head);
+		let mut old_head = std::mem::replace(&mut self.head, new_head);
 		if let Some(old_node) = old_head.as_mut() {
 			old_node.prev = new_head;
 		} else {
@@ -187,7 +184,7 @@ impl<T> LinkedList<T> {
 
 	pub fn push_back(&mut self, elt: T) {
 		let new_tail = NodePtr::new(elt, &self.tail, &Default::default());
-		let old_tail = std::mem::replace(&mut self.tail, new_tail);
+		let mut old_tail = std::mem::replace(&mut self.tail, new_tail);
 		if let Some(old_node) = old_tail.as_mut() {
 			old_node.next = new_tail;
 		} else {
@@ -231,21 +228,17 @@ impl<T> LinkedList<T> {
 // TODO Cursor
 // TODO other experimentals
 
-impl<T> Clone for LinkedList<T>
-where
-	T: Clone,
-{
+impl<T: Clone> Clone for LinkedList<T> {
 	fn clone(&self) -> Self {
 		self.iter().map(|elt| elt.clone()).collect()
 	}
 }
 
-// impl<T> Debug for LinkedList<T>
-// where
-// 	T: Debug,
-// {
-// 
-// }
+impl<T: Debug> Debug for LinkedList<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_list().entries(self).finish()
+	}
+}
 
 impl<T> Default for LinkedList<T> {
 	fn default() -> Self {
@@ -288,11 +281,8 @@ impl<T> FromIterator<T> for LinkedList<T> {
 	}
 }
 
-impl<T> core::hash::Hash for LinkedList<T>
-where
-	T: core::hash::Hash,
-{
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+impl<T: Hash> Hash for LinkedList<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		state.write_usize(self.len()); // write_length_prefix
 		for elt in self {
 			elt.hash(state);
@@ -339,35 +329,29 @@ impl<T> IntoIterator for LinkedList<T> {
 	}
 }
 
-// impl<T> Ord for LinkedList<T>
-// where
-// 	T: Ord,
-// {
-// 
-// }
+impl<T: Ord> Ord for LinkedList<T> {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		self.iter().cmp(other)
+	}
+}
 
-// impl<T> PartialEq<LinkedList<T>> for LinkedList<T> {
-// 
-// }
-// 
-// impl<T> PartialOrd<LinkedList<T>> for LinkedList<T> {
-// 
-// }
+impl<T: PartialEq<T>> PartialEq<LinkedList<T>> for LinkedList<T> {
+	fn eq(&self, other: &LinkedList<T>) -> bool {
+		self.iter().eq(other)
+	}
+}
 
-// impl<T> Eq for LinkedList<T>
-// where
-// 	T: Eq,
-// {}
+impl<T: PartialOrd<T>> PartialOrd<LinkedList<T>> for LinkedList<T> {
+	fn partial_cmp(&self, other: &LinkedList<T>) -> Option<std::cmp::Ordering> {
+		self.iter().partial_cmp(other)
+	}
+}
 
-unsafe impl<T> Send for LinkedList<T>
-where
-	T: Send,
-{}
+impl<T: Eq> Eq for LinkedList<T> {}
 
-unsafe impl<T> Sync for LinkedList<T>
-where
-	T: Sync
-{}
+unsafe impl<T: Send> Send for LinkedList<T> {}
+
+unsafe impl<T: Sync> Sync for LinkedList<T> {}
 
 // Iter
 
@@ -379,19 +363,21 @@ impl<T> Clone for Iter<'_, T> {
 
 impl<T> Copy for Iter<'_, T> {}
 
-// impl<T> Debug for Iter<'_, T> {
-// 
-// }
+impl<T: Debug> Debug for Iter<'_, T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("Iter")
+			.field(&*std::mem::ManuallyDrop::new( LinkedList { head: self.head, tail: self.tail, len : self.left, }))
+			.field(&self.left)
+			.finish()
+	}
+}
 
 impl<T> DoubleEndedIterator for Iter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-		if self.left == 0 {
-			return None
-		}
-		let tail_node = self.tail.as_ref_unchecked();
-		self.tail = tail_node.prev;
+		let node = self.tail.as_ref()?;
+		self.tail = node.prev;
 		self.left -= 1;
-		Some(&tail_node.value)
+		Some(&node.value)
     }
 }
 
@@ -407,45 +393,34 @@ impl<'a, T> Iterator for Iter<'a, T> {
 	type Item = &'a T;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		match self.left {
-			0 => None,
-			_ => {
-				let head = self.head.as_mut_unchecked();
-				self.head = head.next;
-				self.left -= 1;
-				Some(&head.value)
-			},
-		}
+		let node = self.head.as_ref()?;
+		self.head = node.next;
+		self.left -= 1;
+		Some(&node.value)
 	}
 }
 
-unsafe impl<T> Send for Iter<'_, T>
-where
-	T: Sync,
-{}
+unsafe impl<T: Sync> Send for Iter<'_, T> {}
 
-unsafe impl<T> Sync for Iter<'_, T>
-where
-	T: Sync,
-{}
+unsafe impl<T: Sync> Sync for Iter<'_, T> {}
 
 // IterMut
 
-// impl<T> Debug for IterMut<'_, T> {
-// 
-// }
+impl<T: Debug> Debug for IterMut<'_, T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("Iter")
+			.field(&*std::mem::ManuallyDrop::new( LinkedList { head: self.head, tail: self.tail, len : self.left, }))
+			.field(&self.left)
+			.finish()
+	}
+}
 
 impl<T> DoubleEndedIterator for IterMut<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        match self.left {
-			0 => None,
-			_ => {
-				let tail = self.tail.as_mut_unchecked();
-				self.tail = tail.prev;
-				self.left -= 1;
-				Some(&mut tail.value)
-			},
-		}
+		let node = self.tail.as_mut()?;
+		self.tail = node.prev;
+		self.left -= 1;
+		Some(&mut node.value)
     }
 }
 
@@ -461,33 +436,24 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 	type Item = &'a mut T;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		match self.left {
-			0 => None,
-			_ => {
-				let head = self.head.as_mut_unchecked();
-				self.head = head.next;
-				self.left -= 1;
-				Some(&mut head.value)
-			},
-		}
+		let node = self.head.as_mut()?;
+		self.head = node.next;
+		self.left -= 1;
+		Some(&mut node.value)
 	}
 }
 
-unsafe impl<T> Send for IterMut<'_, T>
-where
-	T: Sync,
-{}
+unsafe impl<T: Sync> Send for IterMut<'_, T> {}
 
-unsafe impl<T> Sync for IterMut<'_, T>
-where
-	T: Sync,
-{}
+unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
 
 // IntoIter
 
-// impl<T> Debug for IntoIter<T> {
-// 
-// }
+impl<T: Debug> Debug for IntoIter<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("IntoIter").field(&self.list).finish()
+	}
+}
 
 impl<T> DoubleEndedIterator for IntoIter<T> {
     fn next_back(&mut self) -> Option<Self::Item> {
