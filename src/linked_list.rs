@@ -24,6 +24,10 @@ impl<T> NodePtr<T> {
 		})
 	}
 
+	fn into_box_unchecked(self) -> Box<Node<T>> {
+		unsafe { Box::from_raw(self.ptr.unwrap_unchecked().as_ptr()) }
+	}
+
 	fn as_ref<'a>(&self) -> Option<&'a Node<T>> {
 		self.ptr.map(|valid_ptr| unsafe {
 			valid_ptr.as_ref()
@@ -43,7 +47,7 @@ impl<T> NodePtr<T> {
 
 impl<T> Clone for NodePtr<T> {
 	fn clone(&self) -> Self {
-		NodePtr { ptr: self.ptr }
+		*self
 	}
 }
 
@@ -54,6 +58,10 @@ impl<T> Default for NodePtr<T> {
 		NodePtr { ptr: None }
 	}
 }
+
+unsafe impl<T: Sync> Send for NodePtr<T> {}
+
+unsafe impl<T: Sync> Sync for NodePtr<T> {}
 
 struct Node<T> {
 	value: T,
@@ -79,6 +87,20 @@ pub struct IntoIter<T> {
 	list: LinkedList<T>,
 }
 
+pub struct Cursor<'a, T> {
+	next_index: usize,
+	current: NodePtr<T>,
+	list: &'a LinkedList<T>,
+}
+
+pub struct CursorMut<'a, T> {
+	next_index: usize,
+	current: NodePtr<T>,
+	list: &'a mut LinkedList<T>,
+}
+
+// TODO DrainFilter
+
 pub struct LinkedList<T> {
 	head: NodePtr<T>,
 	tail: NodePtr<T>,
@@ -101,11 +123,10 @@ impl<T> LinkedList<T> {
 			std::mem::swap(self, other);
 			return;
 		}
-		self.len += std::mem::replace(&mut other.len, 0);
-		let other_head = std::mem::replace(&mut other.head, Default::default());
-		self.tail.as_mut_unchecked().next = other_head;
-		other_head.as_mut_unchecked().prev = self.tail;
-		self.tail = std::mem::replace(&mut other.tail, Default::default());
+		self.len += other.len;
+		self.tail.as_mut_unchecked().next = other.head;
+		other.head.as_mut_unchecked().prev = std::mem::replace(&mut self.tail, other.tail);
+		std::mem::forget(other);
 	}
 
 	pub fn iter(&self) -> Iter<T> {
@@ -124,6 +145,22 @@ impl<T> LinkedList<T> {
 			left: self.len(),
 			phantom: PhantomData,
 		}
+	}
+
+	pub fn cursor_front(&self) -> Cursor<T> {
+		Cursor { next_index: 1, current: self.head, list: self }
+	}
+
+	pub fn cursor_front_mut(&mut self) -> CursorMut<T> {
+		CursorMut { next_index: 1, current: self.head, list: self }
+	}
+
+	pub fn cursor_back(&self) -> Cursor<T> {
+		Cursor { next_index: self.len(), current: self.tail, list: self }
+	}
+
+	pub fn cursor_back_mut(&mut self) -> CursorMut<T> {
+		CursorMut { next_index: self.len(), current: self.tail, list: self }
 	}
 
 	pub fn is_empty(&self) -> bool {
@@ -172,14 +209,21 @@ impl<T> LinkedList<T> {
 		self.len += 1;
 	}
 
-	pub fn pop_front(&mut self) -> Option<T> {
-		let boxed = self.head.into_box()?;
-		self.head = boxed.next;
+	fn _pop_front(&mut self) -> Option<T> {
+		let boxed_head = self.head.into_box_unchecked();
+		self.head = boxed_head.next;
 		self.len -= 1;
 		if let Some(new_head_node) = self.head.as_mut() {
 			new_head_node.prev = Default::default();
 		}
-		Some(boxed.value)
+		Some(boxed_head.value)
+	}
+
+	pub fn pop_front(&mut self) -> Option<T> {
+		match self.len() {
+			0 => None,
+			_ => self._pop_front(),
+		}
 	}
 
 	pub fn push_back(&mut self, elt: T) {
@@ -193,40 +237,47 @@ impl<T> LinkedList<T> {
 		self.len += 1;
 	}
 
-	pub fn pop_back(&mut self) -> Option<T> {
-		let boxed = self.tail.into_box()?;
-		self.tail = boxed.prev;
+	fn _pop_back(&mut self) -> Option<T> {
+		let boxed_tail = self.tail.into_box_unchecked();
+		self.tail = boxed_tail.prev;
 		self.len -= 1;
 		if let Some(new_tail_node) = self.tail.as_mut() {
 			new_tail_node.next = Default::default();
 		}
-		Some(boxed.value)
+		Some(boxed_tail.value)
+	}
+
+	pub fn pop_back(&mut self) -> Option<T> {
+		match self.len() {
+			0 => None,
+			_ => self._pop_back(),
+		}
+	}
+
+	fn _cursor_at_mut(&mut self, at: usize) -> CursorMut<T> {
+		// TODO optimize by going from back
+		let mut node_ptr = self.head;
+		for _ in 0..at {
+			node_ptr = node_ptr.as_mut_unchecked().next;
+		}
+		CursorMut { next_index: at + 1, current: node_ptr, list: self }
 	}
 
 	pub fn split_off(&mut self, at: usize) -> LinkedList<T> {
 		if at == 0 {
-			return std::mem::take(self);
-		} else if at == self.len() {
-			return Self::new();
+			std::mem::take(self)
+		} else if at <= self.len() {
+			self._cursor_at_mut(at - 1).split_after()
+		} else {
+			panic!("Cannot split off at a nonexistent index")
 		}
-		let right_len = self.len - at;
-		self.len = at;
-		// TODO optimize by going from back
-		let mut node_ptr = self.head;
-		for _ in 0..at {
-			node_ptr = node_ptr.as_ref().unwrap().next;
-		}
-		let right_node = node_ptr.as_mut_unchecked();
-		let right_tail = std::mem::replace(&mut self.tail,
-			std::mem::replace(&mut right_node.prev, Default::default())
-		);
-		self.tail.as_mut_unchecked().next = Default::default();
-		LinkedList { head: node_ptr, tail: right_tail, len: right_len }
+	}
+
+	pub fn remove(&mut self, at: usize) -> T {
+		assert!(at < self.len(), "Cannot remove at an index outside of the list bounds");
+		unsafe { self._cursor_at_mut(at).remove_current().unwrap_unchecked() }
 	}
 }
-
-// TODO Cursor
-// TODO other experimentals
 
 impl<T: Clone> Clone for LinkedList<T> {
 	fn clone(&self) -> Self {
@@ -349,15 +400,11 @@ impl<T: PartialOrd<T>> PartialOrd<LinkedList<T>> for LinkedList<T> {
 
 impl<T: Eq> Eq for LinkedList<T> {}
 
-unsafe impl<T: Send> Send for LinkedList<T> {}
-
-unsafe impl<T: Sync> Sync for LinkedList<T> {}
-
 // Iter
 
 impl<T> Clone for Iter<'_, T> {
 	fn clone(&self) -> Self {
-		Self { ..*self }
+		*self
 	}
 }
 
@@ -398,11 +445,18 @@ impl<'a, T> Iterator for Iter<'a, T> {
 		self.left -= 1;
 		Some(&node.value)
 	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		(self.left, Some(self.left))
+	}
+
+	fn last(mut self) -> Option<Self::Item>
+	where
+		Self: Sized,
+	{
+		self.next_back()
+	}
 }
-
-unsafe impl<T: Sync> Send for Iter<'_, T> {}
-
-unsafe impl<T: Sync> Sync for Iter<'_, T> {}
 
 // IterMut
 
@@ -441,11 +495,18 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 		self.left -= 1;
 		Some(&mut node.value)
 	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		(self.left, Some(self.left))
+	}
+
+	fn last(mut self) -> Option<Self::Item>
+	where
+		Self: Sized,
+	{
+		self.next_back()
+	}
 }
-
-unsafe impl<T: Sync> Send for IterMut<'_, T> {}
-
-unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
 
 // IntoIter
 
@@ -474,5 +535,328 @@ impl<T> Iterator for IntoIter<T> {
 
 	fn next(&mut self) -> Option<Self::Item> {
 		self.list.pop_front()
+	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		(self.list.len(), Some(self.list.len()))
+	}
+
+	fn last(mut self) -> Option<Self::Item>
+	where
+		Self: Sized,
+	{
+		self.next_back()
+	}
+}
+
+// Cursor
+
+impl<'a, T> Cursor<'a, T> {
+	pub fn index(&self) -> Option<usize> {
+		self.current.as_ref()?;
+		Some(self.next_index - 1)
+	}
+
+	pub fn move_next(&mut self) {
+		if let Some(node) = self.current.as_ref() {
+			self.current = node.next;
+			self.next_index += 1;
+		} else {
+			self.current = self.list.head;
+			self.next_index = 1;
+		}
+	}
+
+	pub fn move_prev(&mut self) {
+		if let Some(node) = self.current.as_ref() {
+			self.current = node.prev;
+			self.next_index -= 1;
+		} else {
+			self.current = self.list.tail;
+			self.next_index = self.list.len()
+		}
+	}
+
+	pub fn current(&self) -> Option<&'a T> {
+		self.current.as_ref().map(|node| &node.value)
+	}
+
+	pub fn peek_next(&self) -> Option<&'a T> {
+		self.current.as_ref()
+			.map_or(self.list.head, |node| node.next).as_ref()
+			.map(|node| &node.value)
+	}
+
+	pub fn peek_prev(&self) -> Option<&'a T> {
+		self.current.as_ref()
+			.map_or(self.list.tail, |node| node.prev).as_ref()
+			.map(|node| &node.value)
+	}
+
+	pub fn front(&self) -> Option<&'a T> {
+		self.list.head.as_ref().map(|node| &node.value)
+	}
+
+	pub fn back(&self) -> Option<&'a T> {
+		self.list.tail.as_ref().map(|node| &node.value)
+	}
+}
+
+impl<T> Clone for Cursor<'_, T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<T> Copy for Cursor<'_, T> {}
+
+impl<T: Debug> Debug for Cursor<'_, T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("Cursor")
+			.field(&self.list)
+			.field(&self.index())
+			.finish()
+	}
+}
+
+// CursorMut
+
+impl<'a, T> CursorMut<'a, T> {
+	pub fn index(&self) -> Option<usize> {
+		self.current.as_ref()?;
+		Some(self.next_index - 1)
+	}
+
+	pub fn move_next(&mut self) {
+		if let Some(node) = self.current.as_ref() {
+			self.current = node.next;
+			self.next_index += 1;
+		} else {
+			self.current = self.list.head;
+			self.next_index = 1;
+		}
+	}
+
+	pub fn move_prev(&mut self) {
+		if let Some(node) = self.current.as_ref() {
+			self.current = node.prev;
+			self.next_index -= 1;
+		} else {
+			self.current = self.list.tail;
+			self.next_index = self.list.len()
+		}
+	}
+
+	pub fn current(&mut self) -> Option<&mut T> {
+		self.current.as_mut().map(|node| &mut node.value)
+	}
+
+	pub fn peek_next(&mut self) -> Option<&mut T> {
+		self.current.as_ref()
+			.map_or(self.list.head, |node| node.next).as_mut()
+			.map(|node| &mut node.value)
+	}
+
+	pub fn peek_prev(&mut self) -> Option<&mut T> {
+		self.current.as_ref()
+			.map_or(self.list.tail, |node| node.prev).as_mut()
+			.map(|node| &mut node.value)
+	}
+
+	pub fn as_cursor(&self) -> Cursor<T> {
+		Cursor { next_index: self.next_index, current: self.current, list: self.list }
+	}
+
+	pub fn insert_after(&mut self, item: T) {
+		if let Some(node_before) = self.current.as_mut() {
+			self.list.len += 1;
+			let inserted = NodePtr::new(item, &self.current, &node_before.next);
+			if let Some(node_after) = node_before.next.as_mut() {
+				node_after.prev = inserted;
+			} else {
+				self.list.tail = inserted;
+			}
+			node_before.next = inserted;
+		} else {
+			self.list.push_front(item);
+		}
+	}
+
+	pub fn insert_before(&mut self, item: T) {
+		if let Some(node_after) = self.current.as_mut() {
+			self.list.len += 1;
+			let inserted = NodePtr::new(item, &node_after.prev, &self.current);
+			if let Some(node_before) = node_after.prev.as_mut() {
+				node_before.next = inserted;
+			} else {
+				self.list.head = inserted;
+			}
+			self.next_index += 1;
+		} else {
+			self.list.push_back(item);
+		}
+	}
+
+	pub fn remove_current(&mut self) -> Option<T> {
+		let mut boxed = self.current.into_box()?;
+		self.list.len -= 1;
+		if let Some(before) = boxed.prev.as_mut() {
+			before.next = boxed.next;
+		}
+		if let Some(after) = boxed.next.as_mut() {
+			after.prev = boxed.prev;
+		}
+		self.current = boxed.next;
+		Some(boxed.value)
+	}
+
+	pub fn remove_current_as_list(&mut self) -> Option<LinkedList<T>> {
+		let node = self.current.as_mut()?;
+		let node_ptr = self.current;
+		self.list.len -= 1;
+		if let Some(before) = node.prev.as_mut() {
+			before.next = node.next;
+		}
+		if let Some(after) = node.next.as_mut() {
+			after.prev = node.prev;
+		}
+		self.current = node.next;
+		Some(LinkedList { head: node_ptr, tail: node_ptr, len: 1 })
+	}
+
+	pub fn splice_after(&mut self, mut list: LinkedList<T>) {
+		if list.is_empty() {
+			return;
+		} else if self.list.is_empty() {
+			std::mem::swap(self.list, &mut list);
+			return;
+		} else if let Some(before) = self.current.as_mut() {
+			if let Some(after) = before.next.as_mut() {
+				after.prev = list.tail;
+				list.tail.as_mut_unchecked().next = before.next;
+			}
+			before.next = list.head;
+			list.head.as_mut_unchecked().prev = self.current;
+		} else {
+			self.list.head.as_mut_unchecked().prev = list.tail;
+			list.tail.as_mut_unchecked().next = std::mem::replace(&mut self.list.head, list.head);
+		}
+		self.list.len += list.len();
+		std::mem::forget(list);
+	}
+
+	pub fn splice_before(&mut self, mut list: LinkedList<T>) {
+		if list.is_empty() {
+			return;
+		} else if self.list.is_empty() {
+			std::mem::swap(self.list, &mut list);
+			return;
+		} else if let Some(after) = self.current.as_mut() {
+			if let Some(before) = after.prev.as_mut() {
+				before.next = list.head;
+				list.head.as_mut_unchecked().prev = after.prev;
+			}
+			after.prev = list.tail;
+			list.tail.as_mut_unchecked().next = self.current;
+			self.next_index += list.len();
+		} else {
+			self.list.tail.as_mut_unchecked().next = list.head;
+			list.head.as_mut_unchecked().prev = std::mem::replace(&mut self.list.tail, list.tail);
+		}
+		self.list.len += list.len();
+		std::mem::forget(list);
+	}
+
+	pub fn split_after(&mut self) -> LinkedList<T> {
+		if let Some(node) = self.current.as_mut() {
+			if let Some(next) = node.next.as_mut() {
+				next.prev = Default::default();
+				let head = std::mem::take(&mut node.next);
+				let tail = std::mem::replace(&mut self.list.tail, self.current);
+				let len = self.list.len() - self.next_index;
+				self.list.len = self.next_index;
+				LinkedList { head, tail, len }
+			} else {
+				Default::default()
+			}
+		} else {
+			std::mem::take(&mut self.list)
+		}
+	}
+
+	pub fn split_before(&mut self) -> LinkedList<T> {
+		if let Some(node) = self.current.as_mut() {
+			if let Some(prev) = node.prev.as_mut() {
+				prev.next = Default::default();
+				let tail = std::mem::take(&mut node.prev);
+				let head = std::mem::replace(&mut self.list.head, self.current);
+				let len = self.next_index - 1;
+				self.list.len -= len;
+				self.next_index = 1;
+				LinkedList { head, tail, len }
+			} else {
+				Default::default()
+			}
+		} else {
+			std::mem::take(&mut self.list)
+		}
+	}
+
+	pub fn push_front(&mut self, elt: T) {
+		self.list.push_front(elt);
+		self.next_index += 1;
+	}
+
+	pub fn push_back(&mut self, elt: T) {
+		self.list.push_back(elt);
+	}
+
+	pub fn pop_front(&mut self) -> Option<T> {
+		if let Some(node) = self.current.as_ref() {
+			if self.next_index == 1 {
+				self.current = node.next;
+			} else {
+				self.next_index -= 1;
+			}
+			self.list._pop_front()
+		} else {
+			self.list.pop_front()
+		}
+	}
+
+	pub fn pop_back(&mut self) -> Option<T> {
+		if self.current.ptr.is_some() {
+			if self.next_index == self.list.len() {
+				self.current = Default::default();
+			}
+			self.list._pop_back()
+		} else {
+			self.list.pop_back()
+		}
+	}
+
+	pub fn front(&self) -> Option<&T> {
+		self.list.head.as_ref().map(|node| &node.value)
+	}
+
+	pub fn front_mut(&mut self) -> Option<&mut T> {
+		self.list.head.as_mut().map(|node| &mut node.value)
+	}
+
+	pub fn back(&self) -> Option<&T> {
+		self.list.tail.as_ref().map(|node| &node.value)
+	}
+
+	pub fn back_mut(&mut self) -> Option<&mut T> {
+		self.list.tail.as_mut().map(|node| &mut node.value)
+	}
+}
+
+impl<T: Debug> Debug for CursorMut<'_, T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("CursorMut")
+			.field(&self.list)
+			.field(&self.index())
+			.finish()
 	}
 }
