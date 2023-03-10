@@ -1,5 +1,8 @@
 use std::{fmt::Debug, hash::Hash, iter::FusedIterator, marker::PhantomData, ptr::NonNull};
 
+#[cfg(test)]
+mod tests;
+
 struct NodePtr<T> {
 	ptr: Option<NonNull<Node<T>>>,
 }
