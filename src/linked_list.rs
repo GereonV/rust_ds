@@ -99,7 +99,11 @@ pub struct CursorMut<'a, T> {
 	list: &'a mut LinkedList<T>,
 }
 
-// TODO DrainFilter
+pub struct DrainFilter<'a, T, F: FnMut(&mut T) -> bool> {
+	current: NodePtr<T>,
+	pred: F,
+	list: &'a mut LinkedList<T>,
+}
 
 pub struct LinkedList<T> {
 	head: NodePtr<T>,
@@ -276,6 +280,10 @@ impl<T> LinkedList<T> {
 	pub fn remove(&mut self, at: usize) -> T {
 		assert!(at < self.len(), "Cannot remove at an index outside of the list bounds");
 		unsafe { self._cursor_at_mut(at).remove_current().unwrap_unchecked() }
+	}
+
+	pub fn drain_filter<F: FnMut(&mut T) -> bool>(&mut self, filter: F) -> DrainFilter<T, F> {
+		DrainFilter { current: self.head, pred: filter, list: self }
 	}
 }
 
@@ -700,11 +708,13 @@ impl<'a, T> CursorMut<'a, T> {
 	pub fn remove_current(&mut self) -> Option<T> {
 		let mut boxed = self.current.into_box()?;
 		self.list.len -= 1;
-		if let Some(before) = boxed.prev.as_mut() {
-			before.next = boxed.next;
+		match boxed.prev.as_mut() {
+			Some(before) => before.next = boxed.next,
+			None => self.list.head = boxed.next,
 		}
-		if let Some(after) = boxed.next.as_mut() {
-			after.prev = boxed.prev;
+		match boxed.next.as_mut() {
+			Some(after) => after.prev = boxed.prev,
+			None => self.list.tail = boxed.prev,
 		}
 		self.current = boxed.next;
 		Some(boxed.value)
@@ -858,5 +868,43 @@ impl<T: Debug> Debug for CursorMut<'_, T> {
 			.field(&self.list)
 			.field(&self.index())
 			.finish()
+	}
+}
+
+impl<T: Debug, F: FnMut(&mut T) -> bool> Debug for DrainFilter<'_, T, F> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("DrainFilter").field(&self.list).finish()
+	}
+}
+
+impl<T, F: FnMut(&mut T) -> bool> Drop for DrainFilter<'_, T, F> {
+	fn drop(&mut self) {
+		self.for_each(drop);
+	}
+}
+
+impl<T, F: FnMut(&mut T) -> bool> Iterator for DrainFilter<'_, T, F> {
+	type Item = T;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		while let Some(node) = self.current.as_mut() {
+			if !(self.pred)(&mut node.value) {
+				self.current = node.next;
+				continue;
+			}
+			self.current = node.next;
+			let mut boxed = self.current.into_box()?;
+			self.list.len -= 1;
+			match boxed.prev.as_mut() {
+				Some(before) => before.next = boxed.next,
+				None => self.list.head = boxed.next,
+			}
+			match boxed.next.as_mut() {
+				Some(after) => after.prev = boxed.prev,
+				None => self.list.tail = boxed.prev,
+			}
+			return Some(boxed.value);
+		}
+		None
 	}
 }
