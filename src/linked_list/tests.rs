@@ -825,11 +825,11 @@ mod std_tests {
 
 		{
 			let mut iter = list.drain_filter(|_| true);
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 			assert_eq!(iter.next(), None);
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 			assert_eq!(iter.next(), None);
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 		}
 
 		assert_eq!(list.len(), 0);
@@ -844,14 +844,14 @@ mod std_tests {
 
 		{
 			let mut iter = list.drain_filter(|_| true);
-			// assert_eq!(iter.size_hint(), (0, Some(initial_len)));
+			assert_eq!(iter.size_hint(), (0, Some(initial_len)));
 			while let Some(_) = iter.next() {
 				count += 1;
-				// assert_eq!(iter.size_hint(), (0, Some(initial_len - count)));
+				assert_eq!(iter.size_hint(), (0, Some(initial_len - count)));
 			}
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 			assert_eq!(iter.next(), None);
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 		}
 
 		assert_eq!(count, initial_len);
@@ -868,13 +868,13 @@ mod std_tests {
 
 		{
 			let mut iter = list.drain_filter(|_| false);
-			// assert_eq!(iter.size_hint(), (0, Some(initial_len)));
+			assert_eq!(iter.size_hint(), (0, Some(initial_len)));
 			for _ in iter.by_ref() {
 				count += 1;
 			}
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 			assert_eq!(iter.next(), None);
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 		}
 
 		assert_eq!(count, 0);
@@ -891,14 +891,14 @@ mod std_tests {
 
 		{
 			let mut iter = list.drain_filter(|_| true);
-			// assert_eq!(iter.size_hint(), (0, Some(initial_len)));
+			assert_eq!(iter.size_hint(), (0, Some(initial_len)));
 			while let Some(_) = iter.next() {
 				count += 1;
-				// assert_eq!(iter.size_hint(), (0, Some(initial_len - count)));
+				assert_eq!(iter.size_hint(), (0, Some(initial_len - count)));
 			}
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 			assert_eq!(iter.next(), None);
-			// assert_eq!(iter.size_hint(), (0, Some(0)));
+			assert_eq!(iter.size_hint(), (0, Some(0)));
 		}
 
 		assert_eq!(count, initial_len);

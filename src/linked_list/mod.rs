@@ -106,6 +106,7 @@ pub struct DrainFilter<'a, T, F: FnMut(&mut T) -> bool> {
 	current: NodePtr<T>,
 	pred: F,
 	list: &'a mut LinkedList<T>,
+	max_left: usize,
 }
 
 pub struct LinkedList<T> {
@@ -293,7 +294,7 @@ impl<T> LinkedList<T> {
 	}
 
 	pub fn drain_filter<F: FnMut(&mut T) -> bool>(&mut self, filter: F) -> DrainFilter<T, F> {
-		DrainFilter { current: self.head, pred: filter, list: self }
+		DrainFilter { current: self.head, pred: filter, max_left: self.len(), list: self }
 	}
 }
 
@@ -935,6 +936,7 @@ impl<T, F: FnMut(&mut T) -> bool> Iterator for DrainFilter<'_, T, F> {
 
 	fn next(&mut self) -> Option<Self::Item> {
 		while let Some(node) = self.current.as_mut() {
+			self.max_left -= 1;
 			if !(self.pred)(&mut node.value) {
 				self.current = node.next;
 				continue;
@@ -953,5 +955,9 @@ impl<T, F: FnMut(&mut T) -> bool> Iterator for DrainFilter<'_, T, F> {
 			return Some(boxed.value);
 		}
 		None
+	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		(0, Some(self.max_left))
 	}
 }
