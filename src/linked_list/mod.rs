@@ -130,10 +130,13 @@ impl<T> LinkedList<T> {
 			std::mem::swap(self, other);
 			return;
 		}
-		self.len += other.len;
-		self.tail.as_mut_unchecked().next = other.head;
-		other.head.as_mut_unchecked().prev = std::mem::replace(&mut self.tail, other.tail);
-		std::mem::forget(other);
+		self.len += std::mem::take(&mut other.len);
+		let other_head = std::mem::take(&mut other.head);
+		self.tail.as_mut_unchecked().next = other_head;
+		other_head.as_mut_unchecked().prev = std::mem::replace(
+			&mut self.tail,
+			std::mem::take(&mut other.tail),
+		);
 	}
 
 	pub fn iter(&self) -> Iter<T> {
@@ -222,6 +225,8 @@ impl<T> LinkedList<T> {
 		self.len -= 1;
 		if let Some(new_head_node) = self.head.as_mut() {
 			new_head_node.prev = Default::default();
+		} else {
+			self.tail = self.head;
 		}
 		Some(boxed_head.value)
 	}
@@ -250,6 +255,8 @@ impl<T> LinkedList<T> {
 		self.len -= 1;
 		if let Some(new_tail_node) = self.tail.as_mut() {
 			new_tail_node.next = Default::default();
+		} else {
+			self.head = self.tail;
 		}
 		Some(boxed_tail.value)
 	}
@@ -310,9 +317,20 @@ impl<T> Default for LinkedList<T> {
 
 impl<T> Drop for LinkedList<T> {
 	fn drop(&mut self) {
+		struct DropGuard<T>(NodePtr<T>);
+		impl<T> Drop for DropGuard<T> {
+			fn drop(&mut self) {
+				while let Some(boxed) = self.0.into_box() {
+					self.0 = boxed.next;
+				}
+			}
+		}
 		let mut node_ptr = self.head;
 		while let Some(boxed) = node_ptr.into_box() {
 			node_ptr = boxed.next;
+			let guard = DropGuard(node_ptr);
+			drop(boxed); // can panic
+			std::mem::forget(guard);
 		}
 	}
 }
@@ -432,7 +450,10 @@ impl<T: Debug> Debug for Iter<'_, T> {
 
 impl<T> DoubleEndedIterator for Iter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-		let node = self.tail.as_ref()?;
+		if self.len() == 0 {
+			return None;
+		}
+		let node = self.tail.as_mut_unchecked();
 		self.tail = node.prev;
 		self.left -= 1;
 		Some(&node.value)
@@ -451,7 +472,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
 	type Item = &'a T;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		let node = self.head.as_ref()?;
+		if self.len() == 0{
+			return None;
+		}
+		let node = self.head.as_mut_unchecked();
 		self.head = node.next;
 		self.left -= 1;
 		Some(&node.value)
@@ -482,7 +506,10 @@ impl<T: Debug> Debug for IterMut<'_, T> {
 
 impl<T> DoubleEndedIterator for IterMut<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-		let node = self.tail.as_mut()?;
+		if self.len() == 0 {
+			return None;
+		}
+		let node = self.tail.as_mut_unchecked();
 		self.tail = node.prev;
 		self.left -= 1;
 		Some(&mut node.value)
@@ -501,7 +528,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 	type Item = &'a mut T;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		let node = self.head.as_mut()?;
+		if self.len() == 0{
+			return None;
+		}
+		let node = self.head.as_mut_unchecked();
 		self.head = node.next;
 		self.left -= 1;
 		Some(&mut node.value)
@@ -737,16 +767,18 @@ impl<'a, T> CursorMut<'a, T> {
 		Some(LinkedList { head: node_ptr, tail: node_ptr, len: 1 })
 	}
 
-	pub fn splice_after(&mut self, mut list: LinkedList<T>) {
+	pub fn splice_after(&mut self, list: LinkedList<T>) {
 		if list.is_empty() {
 			return;
 		} else if self.list.is_empty() {
-			std::mem::swap(self.list, &mut list);
+			std::mem::forget(std::mem::replace(self.list, list));
 			return;
 		} else if let Some(before) = self.current.as_mut() {
 			if let Some(after) = before.next.as_mut() {
 				after.prev = list.tail;
 				list.tail.as_mut_unchecked().next = before.next;
+			} else {
+				self.list.tail = list.tail;
 			}
 			before.next = list.head;
 			list.head.as_mut_unchecked().prev = self.current;
@@ -758,16 +790,18 @@ impl<'a, T> CursorMut<'a, T> {
 		std::mem::forget(list);
 	}
 
-	pub fn splice_before(&mut self, mut list: LinkedList<T>) {
+	pub fn splice_before(&mut self, list: LinkedList<T>) {
 		if list.is_empty() {
 			return;
 		} else if self.list.is_empty() {
-			std::mem::swap(self.list, &mut list);
+			std::mem::forget(std::mem::replace(self.list, list));
 			return;
 		} else if let Some(after) = self.current.as_mut() {
 			if let Some(before) = after.prev.as_mut() {
 				before.next = list.head;
 				list.head.as_mut_unchecked().prev = after.prev;
+			} else {
+				self.list.head = list.head;
 			}
 			after.prev = list.tail;
 			list.tail.as_mut_unchecked().next = self.current;
@@ -882,7 +916,17 @@ impl<T: Debug, F: FnMut(&mut T) -> bool> Debug for DrainFilter<'_, T, F> {
 
 impl<T, F: FnMut(&mut T) -> bool> Drop for DrainFilter<'_, T, F> {
 	fn drop(&mut self) {
-		self.for_each(drop);
+		struct DropGuard<'a, 'b, T, F: FnMut(&mut T) -> bool>(&'b mut DrainFilter<'a, T, F>);
+		impl<T, F: FnMut(&mut T) -> bool> Drop for DropGuard<'_, '_, T, F> {
+			fn drop(&mut self) {
+				self.0.for_each(drop);
+			}
+		}
+		while let Some(elt) = self.next() {
+			let guard = DropGuard(self);
+			drop(elt); // can panic
+			std::mem::forget(guard);
+		}
 	}
 }
 
@@ -895,8 +939,8 @@ impl<T, F: FnMut(&mut T) -> bool> Iterator for DrainFilter<'_, T, F> {
 				self.current = node.next;
 				continue;
 			}
-			self.current = node.next;
 			let mut boxed = self.current.into_box()?;
+			self.current = node.next;
 			self.list.len -= 1;
 			match boxed.prev.as_mut() {
 				Some(before) => before.next = boxed.next,
