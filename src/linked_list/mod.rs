@@ -269,12 +269,28 @@ impl<T> LinkedList<T> {
 		}
 	}
 
-	fn _cursor_at_mut(&mut self, at: usize) -> CursorMut<T> {
-		// TODO optimize by going from back
+	fn _pointer_at_from_head(&self, at: usize) -> NodePtr<T> {
 		let mut node_ptr = self.head;
 		for _ in 0..at {
 			node_ptr = node_ptr.as_mut_unchecked().next;
 		}
+		node_ptr
+	}
+
+	fn _pointer_at_from_tail(&self, at: usize) -> NodePtr<T> {
+		let mut node_ptr = self.tail;
+		for _ in 0..self.len() - at {
+			node_ptr = node_ptr.as_mut_unchecked().prev;
+		}
+		node_ptr
+	}
+
+	fn _cursor_at_mut(&mut self, at: usize) -> CursorMut<T> {
+		let node_ptr = if at <= self.len() / 2 {
+			self._pointer_at_from_head(at)
+		} else {
+			self._pointer_at_from_tail(at)
+		};
 		CursorMut { next_index: at + 1, current: node_ptr, list: self }
 	}
 
@@ -416,13 +432,13 @@ impl<T: Ord> Ord for LinkedList<T> {
 	}
 }
 
-impl<T: PartialEq<T>> PartialEq<LinkedList<T>> for LinkedList<T> {
+impl<T: PartialEq<T>> PartialEq for LinkedList<T> {
 	fn eq(&self, other: &LinkedList<T>) -> bool {
 		self.iter().eq(other)
 	}
 }
 
-impl<T: PartialOrd<T>> PartialOrd<LinkedList<T>> for LinkedList<T> {
+impl<T: PartialOrd<T>> PartialOrd for LinkedList<T> {
 	fn partial_cmp(&self, other: &LinkedList<T>) -> Option<std::cmp::Ordering> {
 		self.iter().partial_cmp(other)
 	}
